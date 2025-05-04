@@ -2,22 +2,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.*;
 
-class CryptoUtil {
-    public static String hash(String input) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA3-256");
-            byte[] hashBytes = digest.digest(input.getBytes(StandardCharsets.UTF_8));
-            StringBuilder hexString = new StringBuilder();
-            for (byte b : hashBytes) {
-                hexString.append(String.format("%02x", b));
-            }
-            return hexString.toString();
-        } catch (Exception e) {
-            throw new RuntimeException("Hashing error: " + e.getMessage());
-        }
-    }
-}
-
 class Transaction {
     String from, to;
     int amount, incentive;
@@ -30,7 +14,21 @@ class Transaction {
     }
 
     public String getTransactionHash() {
-        return CryptoUtil.hash(from + incentive + to + amount);
+        return hash(from + incentive + to + amount);
+    }
+
+    private String hash(String input) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA3-256");
+            byte[] hashBytes = digest.digest(input.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hashBytes) {
+                hexString.append(String.format("%02x", b));
+            }
+            return hexString.toString();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     @Override
@@ -45,7 +43,7 @@ class Miner {
     int[] blockHashScoreArray;
 
     Miner(String id, int computationScore, int[] blockHashScoreArray) {
-        this.id = id.toUpperCase(); // Ensuring miner ID is in uppercase
+        this.id = id;
         this.computationScore = computationScore;
         this.blockHashScoreArray = blockHashScoreArray;
     }
@@ -69,7 +67,7 @@ class Block {
         this.prevBlockHash = prevBlockHash;
         this.transactions = new ArrayList<>(transactions);
         this.merkleRoot = computeMerkleRoot(transactions);
-        this.blockHash = CryptoUtil.hash(prevBlockHash + blockNumber + merkleRoot);
+        this.blockHash = computeBlockHash();
         this.nonce = computeNonce();
         this.selectedMiner = selectedMiner;
     }
@@ -83,7 +81,7 @@ class Block {
             List<String> newHashes = new ArrayList<>();
             for (int i = 0; i < hashes.size(); i += 2) {
                 if (i + 1 < hashes.size()) {
-                    newHashes.add(CryptoUtil.hash(hashes.get(i) + hashes.get(i + 1)));
+                    newHashes.add(hash(hashes.get(i) + hashes.get(i + 1)));
                 } else {
                     newHashes.add(hashes.get(i));
                 }
@@ -93,14 +91,32 @@ class Block {
         return hashes.isEmpty() ? "" : hashes.get(0);
     }
 
+    private String computeBlockHash() {
+        return hash(prevBlockHash + blockNumber + merkleRoot);
+    }
+
     private int computeNonce() {
         int nonce = 0;
         while (true) {
-            String hashValue = CryptoUtil.hash(blockHash + nonce);
+            String hashValue = hash(blockHash + nonce);
             if (hashValue.endsWith("0")) {
                 return nonce;
             }
             nonce++;
+        }
+    }
+
+    private String hash(String input) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA3-256");
+            byte[] hashBytes = digest.digest(input.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hashBytes) {
+                hexString.append(String.format("%02x", b));
+            }
+            return hexString.toString();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
     }
 
@@ -110,7 +126,7 @@ class Block {
     }
 }
 
-public class Bonthu{
+public class BlockChain {
     public static void main(String[] args) {
         Scanner scanner = new Scanner(System.in);
 
@@ -130,15 +146,12 @@ public class Bonthu{
             unconfirmedTransactions.add(new Transaction(parts[0], parts[1], Integer.parseInt(parts[2]), Integer.parseInt(parts[3])));
         }
 
-        // Read block reward
-        int blockReward = Integer.parseInt(scanner.nextLine());
-
         // Read miners
         int numMiners = Integer.parseInt(scanner.nextLine());
         List<Miner> miners = new ArrayList<>();
         for (int i = 0; i < numMiners; i++) {
             String[] parts = scanner.nextLine().split(" ");
-            String id = parts[0].toUpperCase(); // Ensure uppercase miner ID
+            String id = parts[0];
             int computationScore = Integer.parseInt(parts[1]);
             int[] blockHashScoreArray = new int[8];
             for (int j = 0; j < 8; j++) {
@@ -148,10 +161,11 @@ public class Bonthu{
         }
         scanner.close();
 
-        // Sort transactions based on incentive, then by receiver account lexicographically
+        // Sort transactions
         unconfirmedTransactions.sort((a, b) -> {
             if (b.incentive != a.incentive) return Integer.compare(b.incentive, a.incentive);
-            return a.to.compareTo(b.to);
+            if (!a.to.equals(b.to)) return a.to.compareTo(b.to);
+            return 0;
         });
 
         String prevBlockHash = "0";
@@ -166,7 +180,6 @@ public class Bonthu{
             }
             if (currentBlockTxns.size() == 4) {
                 Miner selectedMiner = selectMiner(miners, blockNumber);
-                balances.put(selectedMiner.id, balances.getOrDefault(selectedMiner.id, 0) + blockReward); // Add block reward
                 Block block = new Block(blockNumber, prevBlockHash, currentBlockTxns, selectedMiner);
                 System.out.println(block);
                 prevBlockHash = block.blockHash;
@@ -176,16 +189,23 @@ public class Bonthu{
         }
         if (!currentBlockTxns.isEmpty()) {
             Miner selectedMiner = selectMiner(miners, blockNumber);
-            balances.put(selectedMiner.id, balances.getOrDefault(selectedMiner.id, 0) + blockReward); // Add block reward
             Block block = new Block(blockNumber, prevBlockHash, currentBlockTxns, selectedMiner);
             System.out.println(block);
         }
     }
 
     private static Miner selectMiner(List<Miner> miners, int blockNumber) {
-        return miners.stream()
-                .max(Comparator.comparingInt(miner -> miner.getBlockSealingScore(blockNumber)))
-                .orElse(null);
+        int maxScore = -1;
+        Miner selectedMiner = null;
+        int blockIndex = blockNumber % 8;
+
+        for (Miner miner : miners) {
+            int score = miner.getBlockSealingScore(blockNumber);
+            if (score > maxScore) {
+                maxScore = score;
+                selectedMiner = miner;
+            }
+        }
+        return selectedMiner;
     }
 }
-
